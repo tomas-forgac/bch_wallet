@@ -6,8 +6,7 @@ import 'package:sqflite/sqflite.dart' as sql;
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
 import 'account.dart';
-
-//final x = _test;
+import 'utils/utils.dart' as utils;
 
 class BchWallet {
   static List<Wallet> _wallets;
@@ -16,24 +15,24 @@ class BchWallet {
 
   static Future<void> init() async {
     final db = await Database.database;
-//    await db.delete("address", where: "child_no = 4");
   }
 
-  /// Creates a new wallet, saves it in the phone's secure storage and returns its ID.
-  /// Keep track of wallet IDs if you want to use more wallets in one app. If you want to use only one wallet in your
-  /// app simply omit wallet id argument in all other functions
+  /// Creates a new wallet, saves it in the phone's secure storage and returns its [Wallet] instance.
   ///
   /// Creates one default account, which can be optionally named using [defaultAccountName]
   ///
-  /// If [password] is defined, it is used as a 13th word of the mnemonic phrase. The password is *not* stored.
+  /// If [password] is defined, it is used as a 13th word of the mnemonic phrase. The password is *not* stored and will
+  /// be required for operations like sending, creating a new account, or retreving mnemonic
   /// _Note: this means, that if the user or the app loses the password, the wallet cannot be accessed from the
   /// secure storage only_
   ///
   /// Typically there's no reason to change [derivationPath]. Change it only if you know what you're doing.
   static Future<Wallet> createWallet({String name, String defaultAccountName, String password,
       bool testnet = false, String derivationPath = "m/44'/145'"}) async {
+    // password hash will be stored locally to check validity of the provided password when needed
     String passwordHash;
 
+    // flag if the wallet is password protected - it will be used in some functions to determine if password is needed
     final bool passwordProtected = password != null && password.length > 0;
 
     if (password != null && password.length > 0) {
@@ -96,81 +95,15 @@ class BchWallet {
     return _wallets[walletId - 1];
   }
 
-
-  //TODO: Implement
-  static Future<Map<String, int>> getWalletBalance([int walletId]) async {
-    return {
-      "confirmed" : 100000,
-      "unconfirmed" : 500000,
-    };
-  }
-
-  /// Returns XPub of a BIP44 account. If [accountId] is not provided, returns XPub of the default account
-  static Future<String> getXPub([int walletId = 1, int accountId = 0]) async {
-    return await Account(accountId, walletId).getXPub();
-  }
-
-  static Future<Map<String, List<Map<String, dynamic>>>> getAddressList({accountId = 0, walletId = 0}) async {
-    return {
-      "main": [{
-        "address": "bitcoincash:lakjdfkjgkjfalksjfdlakjdf",
-        "balance": 0,
-      }],
-      "change": []
-    };
-  }
-
-  static Future<int> getMaxSpendable({int accountId = 0, int walletId = 0}) async {
-    return 199000000;
-  }
-
-  /// Send [amount] in satoshis to the [address].
-  /// Txid is returned.
-  ///
-  /// If the wallet has been password protected when it was created, the [password] has to be provided.
-  static Future<String> send(int amount, String address,
-    {String password, int accountId = 0, int walletId = 0}) async {
-
-    return "ksjehr3jh45jh234hoijsadou98324iuhasidh";
-  }
-
-  static bool validateAddress(String address) {
-    return true;
-  }
-
-  static Future<Map<String, dynamic>> getAddressDetails(String address) async {
-    return {
-      "balance": 0
-    };
-  }
-
-  static Future<Map<String, dynamic>> getTransactionDetails(String txid) async {
-    return {
-      "inputs": []
-    };
-  }
-
-  /// Rescans full transaction history of the wallet and updates the stored data accordingly.
-  /// Use this sparingly only if necessary as it calls the API extensively and might take a while to run
-  static rescanWallet([int walletId = 0]) async {
-
-  }
-
-  static int toSatoshi(double amount) => (amount * 100000000).toInt();
+  static int toSatoshi(double amount) => (amount * 100000000).round();
 
   static double fromSatoshi(int amount) => amount / 100000000;
 
-
-  validatePassword(String password) {
-    return true;
-  }
   /// Deletes all wallet data (keys, history, etc.) from the phone.
   /// _*Note*: This cannot be undone!_
-  static Future<bool> deleteWallet([int walletId = 0]) async {
-    return true;
-  }
+  static Future<bool> deleteWallet([int walletId = 0]) async => utils.deleteWallet(walletId, await Database.database, true);
 
-  static Future<List<Wallet>> _getWallets(sql.Database db) async {
+   static Future<List<Wallet>> _getWallets(sql.Database db) async {
     List queryResult = await db.query("wallet");
 
     _wallets = List<Wallet>.generate(queryResult.length, (i) => Wallet.fromRow(queryResult[i]));
@@ -178,7 +111,9 @@ class BchWallet {
     return _wallets;
   }
 
-  _setTestNet(testNet) {
-    Bitbox.Bitbox.setRestUrl(restUrl: testNet ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
+  static setTestNet(testnet) {
+     //TODO: check where this can be applied
+    Bitbox.Bitbox.setRestUrl(testnet ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
   }
+
 }

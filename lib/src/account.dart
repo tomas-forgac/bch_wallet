@@ -1,4 +1,5 @@
 import 'package:bch_wallet/src/database.dart';
+import 'package:bch_wallet/src/utils/utils.dart';
 import 'package:bitbox/bitbox.dart' as Bitbox;
 
 import '../bch_wallet.dart';
@@ -38,20 +39,23 @@ class Account {
   /// 3. Update user screen for the obtained information
   Future<int> getStoredBalance() async => _getStoredBalance(await Database.database);
 
-  Future<Map<String, int>> getBalanceFromBlockchain({int fetchLast = 10, bool fetchAdditional = true}) async =>
+  Future<Map<String, int>> getBalanceFromBlockchain({int fetchLast = 6, int fetchAdditional = 2}) async =>
     _getBalanceFromBlockchain(await Database.database, fetchLast, fetchAdditional);
 
   Future<List<Transaction>> getTransactions() async => _getTransactions(this, await Database.database);
 
   Future<List<Address>> getUtxos() async {
     final db = await Database.database;
-    final result = (await db.rawQuery("SELECT * FROM address WHERE balance > 0"));
+    final result = (await db.rawQuery("SELECT * FROM address WHERE balance > 0 AND account_no = ?", [number]));
 
-    List<Address> addrsUtxo = List<Address>(result.length);
+    List<Address> addrsUtxo = List<Address>.generate(result.length, (i) => Address.fromDb(result[i]));
 
-    for (int i = 0; i < result.length; i++) {
-      addrsUtxo[i] = Address.fromDb(result[i]);
+    if (addrsUtxo.length == 0) {
+      return addrsUtxo;
     }
+
+    Bitbox.Bitbox.setRestUrl(
+      Address.isTestnet(addrsUtxo.first.cashAddr) ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
 
     List<String> addrToFetch = <String>[];
 
@@ -74,22 +78,26 @@ class Account {
     return addrsUtxo;
   }
 
-  int getMaxSpendable(List<Address> addrsUtxo, int outputs) {
+  int getMaxSpendable(int outputs, List<Address> addrsUtxo) {
     assert (outputs != null && outputs > 0);
-    assert(addrsUtxo != null && addrsUtxo.length > 0);
+    assert(addrsUtxo != null);
+
+    if (addrsUtxo.length == 0) return 0;
 
     int balance = 0;
     int inputs = 0;
     addrsUtxo.forEach((address) {
-      inputs += address.utxo.length;
       address.utxo.forEach((Bitbox.Utxo utxo) {
-        balance += utxo.satoshis;
+        if (utxo.confirmations > 0) {
+          inputs++;
+          balance += utxo.satoshis;
+        }
       });
     });
-    return balance - Bitbox.BitcoinCash.getByteCount(inputs, outputs);
+    return balance == 0 ? 0 : balance - Bitbox.BitcoinCash.getByteCount(inputs, outputs);
   }
 
-  calculateFee(int amount, int outputsCount, List<Address> addrsUtxo) async {
+  calculateFee(int amount, int outputsCount, List<Address> addrsUtxo) {
     int balance = 0;
     int inputsCount = 0;
     int fee = 0;
@@ -115,14 +123,14 @@ class Account {
   }
 
   /// we're simply spending from the oldest to newest
-  send(List<Map> outputs, List<Address> addrsUtxo, {bool testnet = false, String password}) async {
+  send(List<Map> outputs, List<Address> addrsUtxo, {String password}) async {
     if (outputs == null || outputs.isEmpty) {
       throw ArgumentError("outputs should be non-empty list of Maps");
     } else if (addrsUtxo == null || addrsUtxo.isEmpty) {
       throw ArgumentError("addrsUtxo should be non-empty list of addresses containing utxos");
     }
 
-    int maxSpendable = getMaxSpendable(addrsUtxo, outputs.length);
+    int maxSpendable = getMaxSpendable(outputs.length, addrsUtxo);
 
     int outputAmount = 0;
     
@@ -135,11 +143,12 @@ class Account {
     }
 
     final wallet = await BchWallet.getWallet(walletId);
-    final masterNode = Bitbox.HDNode.fromSeed(Bitbox.Mnemonic.toSeed(await (wallet).getMnemonic(password)));
+    final seed = Bitbox.Mnemonic.toSeed(await wallet.getMnemonic(password) + password);
+    final masterNode = Bitbox.HDNode.fromSeed(seed, wallet.testnet);
 
-    final accountNode = masterNode.derivePath("${wallet.derivationPath}/$number");
+    final accountNode = masterNode.derivePath("${wallet.derivationPath}/$number'");
 
-    final builder = Bitbox.Bitbox.transactionBuilder();
+    final builder = Bitbox.Bitbox.transactionBuilder(testnet: wallet.testnet);
 
     // placeholder for input signatures
     final signatures = <Map>[];
@@ -158,29 +167,47 @@ class Account {
       for (int j = 0; j < address.utxo.length; j++) {
         final  Bitbox.Utxo utxo = address.utxo[j];
 
-        // add the utxo as an input for the transaction
-        builder.addInput(utxo.txid, utxo.vout);
+        if (utxo.confirmations > 0) {
+          // add the utxo as an input for the transaction
+          builder.addInput(utxo.txid, utxo.vout);
 
-        signatures.add({
-          "vin": signatures.length, // this will be the same as the latest input's index
-          "key_pair": accountNode.derive(address.change ? 1 : 0).derive(address.childNo).keyPair,
-          "original_amount": utxo.satoshis
-        });
+//          print("accountNode: " + accountNode.toCashAddress());
+//          final changeNode = accountNode.derive(address.change ? 1 : 0);
+//          print("changeNode: " + changeNode.toCashAddress());
+//          print("child: ${address.childNo}");
+//          print("childNode: " + changeNode.derive(address.childNo).toCashAddress());
+//          print("derivedNode: " + masterNode.derivePath("${wallet.derivationPath}/$number'/0/${address.childNo}").toCashAddress());
+//          print("saved address: " + address.cashAddr);
 
-        totalBalance += utxo.satoshis;
+          final keyPair = accountNode.derive(address.change ? 1 : 0).derive(address.childNo).keyPair as Bitbox.ECPair;
 
-        value -= utxo.satoshis;
+          signatures.add({
+            "vin": signatures.length, // this will be the same as the latest input's index
+            "key_pair": keyPair,
+            "original_amount": utxo.satoshis
+          });
 
-        inputs++;
+          totalBalance += utxo.satoshis;
 
-        fee = Bitbox.BitcoinCash.getByteCount(inputs, outputs.length);
+          value -= utxo.satoshis;
 
-        if (totalBalance > outputAmount + fee) {
-          break;
+          inputs++;
+
+          fee = Bitbox.BitcoinCash.getByteCount(inputs, outputs.length);
+
+          if (totalBalance > outputAmount + fee) {
+            break;
+          }
         }
       }
 
-      addressBalancesToUpdate.add({"id" : address.id, "address" : address.cashAddr, "value" : value});
+      if (value != 0) {
+        addressBalancesToUpdate.add({"id": address.id, "address": address.cashAddr, "value": value});
+      }
+
+      if (totalBalance > outputAmount + fee) {
+        break;
+      }
     }
 
     outputs.forEach((output) {
@@ -191,9 +218,12 @@ class Account {
 
     Address changeAddress;
 
-    if (totalBalance > outputAmount + fee) {
+    final feeWithChange = Bitbox.BitcoinCash.getByteCount(inputs, outputs.length + 1);
+    if (totalBalance > outputAmount + feeWithChange) {
       changeAddress = await _getChangeAddress(db);
-      builder.addOutput(changeAddress.cashAddr, totalBalance - outputAmount - fee);
+      changeAddress.unconfirmedBalance = totalBalance - outputAmount - feeWithChange;
+      // TODO: rename, it's unintuitive
+      builder.addOutput(changeAddress.cashAddr, changeAddress.unconfirmedBalance);
     }
 
     // sign all inputs
@@ -203,28 +233,31 @@ class Account {
 
     // build the transaction
     final tx = builder.build();
+    final rawTx = tx.toHex();
 
-    //TODO
-    final txid = "";
+    Bitbox.Bitbox.setRestUrl(wallet.testnet ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
+    final returnedTxIds = await Bitbox.RawTransactions.sendRawTransaction([rawTx]);
 
-     // TODO: if successful
-    if (true) {
-      changeAddress ?? _saveAddress(db, changeAddress);
+    if (returnedTxIds != null) {
+      final txid = returnedTxIds.first;
+      if (changeAddress != null) {
+        await _saveAddress(db, changeAddress);
+      }
 
-      // TODO: create and save transaction
       final transaction = Transaction(null, txid, DateTime.now());
 
       final txnId = await db.insert("txn", {
+        "wallet_id" : walletId,
         "txid" : txid,
         "time" : DateTime.now().millisecondsSinceEpoch
       });
 
       addressBalancesToUpdate.forEach((address) async {
-        db.rawUpdate("UPDATE address SET balance = balance + ? WHERE id = ?",
-          [address["value"], address["id"]]);
-        db.insert("txn_address", {
+        await db.rawUpdate("UPDATE address SET balance = balance + ? WHERE id = ?", [address["value"], address["id"]]);
+
+        await db.insert("txn_address", {
           "txn_id" :txnId,
-          "address_id" : number,
+          "address_id" : address["id"],
           "value" : address["value"],
         });
 
@@ -237,11 +270,19 @@ class Account {
     }
   }
 
+  Future<bool> rename(String newName) async {
+    final db = await Database.database;
+    final updated = await db.update("account", {"name" : newName}, where: "wallet_id = ? AND account_no = ?",
+      whereArgs: [this.walletId, this.number]);
+
+    return updated == 1;
+  }
+
   Future<Address> _getChangeAddress(sql.Database db) => _getReceivingAddress(db, true);
 
   Future<Address> _getReceivingAddress(sql.Database db, [bool change = false]) async {
     final lastChildNo = (await db.rawQuery("SELECT MAX(child_no) as last_child_no FROM address "
-      "WHERE wallet_id = ? AND account_no = ? AND change = ?", [walletId, number, change])).first["last_child_no"];
+      "WHERE wallet_id = ? AND account_no = ? AND change = ?", [walletId, number, change ? 1 : 0])).first["last_child_no"];
 
     // TODO: check if this yields the same result as path
     final account = Bitbox.Account(
@@ -295,7 +336,7 @@ class Account {
     return balance;
   }
 
-  Future<Map<String, int>> _getBalanceFromBlockchain(sql.Database db, [int fetchLast = 10, bool fetchAdditional = true]) async {
+  Future<Map<String, int>> _getBalanceFromBlockchain(sql.Database db, [int fetchLast = 6, int fetchAdditional = 2]) async {
     final balance = {
       "unconfirmed" : 0,
       "confirmed"   : 0,
@@ -303,7 +344,7 @@ class Account {
 
     _addresses ?? await _getAddresses(db);
 
-    if (_addresses.length == 0 && !fetchAdditional) {
+    if (_addresses.length == 0 && fetchAdditional == 0) {
       return balance;
     }
 
@@ -316,7 +357,7 @@ class Account {
       fetchLast = _addresses.length;
     }
 
-    final List<List<String>> addressesToFetch = List(((fetchLast + (fetchAdditional ? 10 : 0)) / 10).ceil());
+    final List<List<String>> addressesToFetch = List(((fetchLast + (fetchAdditional*2)) / 10).ceil());
 
     int n = 0;
     for (int i = _addresses.length - 1; i >= 0 && i >= _addresses.length - fetchLast; i--) {
@@ -328,32 +369,37 @@ class Account {
       }
     }
 
-    xPub ??= await _getXPub(db);
+    final List<List<Address>> nextAddresses = [
+      List<Address>(fetchAdditional),
+      List<Address>(fetchAdditional)
+    ];
 
-    final List<List<Address>> nextAddresses = [List<Address>(5), List<Address>(5)];
+    if (fetchAdditional > 0) {
+      xPub ??= await _getXPub(db);
 
-    for (int change = 0; change <= 1; change++) {
-      final account = Bitbox.Account(Bitbox.HDNode.fromXPub(xPub).derive(change),
-        _addresses.length > 0 ? _addresses.last.childNo + 1 : 0);
+      for (int change = 0; change <= 1; change++) {
+        final account = Bitbox.Account(
+          Bitbox.HDNode.fromXPub(xPub).derive(change), _addresses.length > 0 ? _addresses.last.childNo + 1 : 0);
 
-      for (int i = 0; i < 5; i++) {
-        final currentChildNo = (lastChildNo[change] == null ? 0 : lastChildNo[change] + 1) + i;
-        nextAddresses[change][i] = Address(currentChildNo, account.getCurrentAddress(false), walletId, number, false);
-        account.currentChild++;
+        for (int i = 0; i < fetchAdditional; i++) {
+          final currentChildNo = (lastChildNo[change] == null ? 0 : lastChildNo[change] + 1) + i;
+          nextAddresses[change][i] =
+            Address( currentChildNo, account.getCurrentAddress(false), walletId, number, false);
+          account.currentChild++;
 
-        addressesToFetch[n] ??= <String>[];
-        addressesToFetch[n].add(nextAddresses[change][i].cashAddr);
+          addressesToFetch[n] ??= <String>[];
+          addressesToFetch[n].add(nextAddresses[change][i].cashAddr);
 
-        if (addressesToFetch[n].length == 10) {
-          n++;
+          if (addressesToFetch[n].length == 10) {
+            n++;
+          }
         }
       }
     }
 
     final allAddressDetails = <String, Map>{};
 
-    print(addressesToFetch);
-    Bitbox.Bitbox.setRestUrl(restUrl: xPub.startsWith("xpub") ? Bitbox.Bitbox.restUrl : Bitbox.Bitbox.trestUrl);
+    Bitbox.Bitbox.setRestUrl(xPub.startsWith("xpub") ? Bitbox.Bitbox.restUrl : Bitbox.Bitbox.trestUrl);
 
     for (int n = 0; n < addressesToFetch.length; n++) {
       final addressDetails = await Bitbox.Address.details(addressesToFetch[n], true) as Map;
@@ -363,10 +409,11 @@ class Account {
     _addresses.forEach((address) {
       if (allAddressDetails.containsKey(address.cashAddr)) {
         final updatedAddress = Address.fromJson(
-          allAddressDetails[address.cashAddr], address.childNo, walletId, number, false);
+          allAddressDetails[address.cashAddr], address.childNo, walletId, number, false, id: address.id);
 
         if (address.balance != updatedAddress.balance) {
           _saveAddress(db, updatedAddress);
+          saveTransactions(address, db, allAddressDetails[address.cashAddr]["transactions"]);
         }
 
         address.unconfirmedBalance = updatedAddress.unconfirmedBalance;
@@ -377,28 +424,29 @@ class Account {
       balance["unconfirmed"] += address.unconfirmedBalance;
     });
 
-    for (int change = 0; change <= 1; change++) {
-      int lastChildWithBalance;
+    if (fetchAdditional > 0) {
+      for (int change = 0; change <= 1; change++) {
+        int lastChildWithBalance;
 
-      for (int i = 0; i < 5; i++) {
-        final address = nextAddresses[change][i];
-        final addressDetails = allAddressDetails[address.cashAddr];
+        for (int i = 0; i < fetchAdditional; i++) {
+          final address = nextAddresses[change][i];
+          final addressDetails = allAddressDetails[address.cashAddr];
 
-        if (addressDetails["balanceSat"] +
-          addressDetails["unconfirmedBalanceSat"] > 0) {
-          address.confirmedBalance = addressDetails["balanceSat"];
-          address.unconfirmedBalance = addressDetails["unconfirmedBalanceSat"];
+          if (addressDetails["balanceSat"] + addressDetails["unconfirmedBalanceSat"] > 0) {
+            address.confirmedBalance = addressDetails["balanceSat"];
+            address.unconfirmedBalance = addressDetails["unconfirmedBalanceSat"];
 
-          balance["confirmed"] += address.confirmedBalance;
-          balance["unconfirmed"] += address.unconfirmedBalance;
+            balance["confirmed"] += address.confirmedBalance;
+            balance["unconfirmed"] += address.unconfirmedBalance;
 
-          lastChildWithBalance = address.childNo;
-        }
-      };
+            lastChildWithBalance = address.childNo;
+          }
+        };
 
-      if (lastChildWithBalance != null) {
-        for (int i = 0; i < lastChildWithBalance - _addresses.last.childNo; i++) {
-          await _saveAddress(db, nextAddresses[change][i]);
+        if (lastChildWithBalance != null) {
+          for (int i = 0; i < lastChildWithBalance - _addresses.last.childNo; i++) {
+            await _saveAddress(db, nextAddresses[change][i]);
+          }
         }
       }
     }
@@ -442,7 +490,6 @@ class Account {
       }
     }
 
-    final x = true;
     return transactions;
   }
 }

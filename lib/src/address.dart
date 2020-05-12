@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:bch_wallet/bch_wallet.dart';
+import 'package:bch_wallet/src/utils/utils.dart';
 import 'package:bitbox/bitbox.dart' as Bitbox;
 import 'package:sqflite/sqflite.dart' as sql;
 
@@ -24,8 +25,8 @@ class Address {
 
   Address(this.childNo, this.cashAddr, this.walletId, this.accountId, this.change, {this.confirmedBalance = 0, this.unconfirmedBalance = 0});
 
-  Address.fromJson(Map<String, dynamic> addressJson, this.childNo, this.walletId, this.accountId, this.change) :
-      cashAddr = addressJson["cashAddr"],
+  Address.fromJson(Map<String, dynamic> addressJson, this.childNo, this.walletId, this.accountId, this.change, {this.id}) :
+      cashAddr = addressJson["cashAddress"],
 //      balance = addressJson["confirmed_balance"] + addressJson["unconfirmed_balance"],
       unconfirmedBalance = addressJson["unconfirmedBalanceSat"],
       confirmedBalance = addressJson["balanceSat"];
@@ -57,7 +58,7 @@ class Address {
     expectedAmount ??= 1;
     int balance;
     do {
-      await Future.delayed(Duration(milliseconds: 2000));
+      await Future.delayed(Duration(milliseconds: 5000));
       balance = await updateBalanceFromBlockchain();
     } while (balance < expectedAmount);
 
@@ -73,7 +74,7 @@ class Address {
   /// }
   /// ````
   Future<int> updateBalanceFromBlockchain() async {
-    Bitbox.Bitbox.setRestUrl(restUrl: _isTestnet(cashAddr) ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
+    Bitbox.Bitbox.setRestUrl(isTestnet(cashAddr) ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
 
     final details = await Bitbox.Address.details(cashAddr);
 
@@ -85,21 +86,20 @@ class Address {
     if (oldBalance != balance) {
       final db = await Database.database;
       await _saveToDb(this, db);
-      await _saveTransactions(this, db, details["transactions"]);
-
-      final x = true;
+      await saveTransactions(this, db, details["transactions"]);
     }
 
     return balance;
   }
 
+  //TODO
   Future<List<Transaction>> getTransactions() async {
     final db = await Database.database;
 
 
   }
 
-  static bool _isTestnet(String cashAddr) {
+  static bool isTestnet(String cashAddr) {
     if (cashAddr.startsWith("bchtest:")) {
       return true;
     } else if (cashAddr.startsWith("bitcoincash:")) {
@@ -129,57 +129,5 @@ class Address {
         print("wallet ${address.walletId} or account ${address.accountId} doesn't exist - this shouldn't happen");
       }
     }
-  }
-
-  static void _saveTransactions(Address address, sql.Database db, List txIds) async {
-    final txToFetch = List<String>.generate(txIds.length, (index) => txIds[index] as String);
-//
-//    final txQuery = "'" + txIds.join("', '") + "'";
-//
-//    final existingTxnQuery = await db.query("txn", where: "txid in ($txQuery)", columns: ["txid"]);
-//
-//    // TODO: this must be tested when I receive more to the alrready saved address
-//    existingTxnQuery.forEach((row) {
-//      txToFetch.remove(row["txid"]);
-//    });
-
-    final txDetails = await Bitbox.Transaction.details(txToFetch, false) as List;
-
-    for (int i = 0; i < txDetails.length; i++) {
-      final tx = txDetails[i];
-      int id;
-
-      final query = (await db.query("txn", columns: ["id"], where: "txid = ?", whereArgs: [tx["txid"]]));
-
-      if (query.length > 0) {
-        id = query.first["id"];
-      } else {
-        id = await db.insert("txn", {
-          "wallet_id" : address.walletId,
-          "txid": tx["txid"],
-          "time": tx["time"] * 1000
-        });
-      }
-
-      for (int j = 0; j < (tx["vin"] as List).length; j++) {
-        if (tx["vin"][j]["cashAddress"] == address.cashAddr) {
-          await db.insert("txn_address", {
-            "txn_id": id,
-            "address_id": address.id,
-            "value": BchWallet.toSatoshi(tx["vin"][j]["value"] * -1),
-          });
-        }
-      }
-
-      for (int j = 0; j < (tx["vout"] as List).length; j++) {
-        if (tx["vout"][j]["scriptPubKey"]["cashAddrs"].first == address.cashAddr) {
-          await db.insert("txn_address", {
-            "txn_id": id,
-            "address_id": address.id,
-            "value": BchWallet.toSatoshi(double.parse(tx["vout"][j]["value"])),
-          });
-        }
-      };
-    };
   }
 }

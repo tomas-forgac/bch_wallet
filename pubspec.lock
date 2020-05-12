@@ -39,9 +39,9 @@ packages:
   bitbox:
     dependency: "direct main"
     description:
-      name: bitbox
-      url: "https://pub.dartlang.org"
-    source: hosted
+      path: "..\\bitbox"
+      relative: true
+    source: path
     version: "0.0.2"
   boolean_selector:
     dependency: transitive

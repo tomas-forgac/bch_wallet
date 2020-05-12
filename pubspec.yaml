@@ -8,7 +8,9 @@ environment:
   sdk: ">=2.1.0 <3.0.0"
 
 dependencies:
-  bitbox: ^0.0.2
+#  bitbox: ^0.0.2
+  bitbox:
+    path: ../bitbox/
   shared_preferences: 0.5.3+5
   sqflite: ^1.2.0
   flutter_secure_storage: 3.3.1+1

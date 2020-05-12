@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:bch_wallet/bch_wallet.dart';
 import 'package:bch_wallet/src/database.dart';
+import 'package:bch_wallet/src/utils/utils.dart';
 import 'package:bitbox/bitbox.dart' as Bitbox;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqflite/sqflite.dart' as sql;
@@ -34,10 +35,6 @@ class Wallet {
   /// Retrieve mnemonic from the secure storage.
   Future<String> getMnemonic([String password]) async => _getMnemonic(await Database.database, password);
 
-//  Future<String> getXPub() async {
-//    return BchWallet.getXPub(id, accountId);
-//  }
-
   Future<Account> createAccount(String name, {String password}) async =>
     _createAccount(await Database.database, password, name);
 
@@ -61,9 +58,11 @@ class Wallet {
     }
 
     // save accounts to have names stored when re-creating them
+    // TODO: test this again
     final savedAccounts = await accounts;
 
-    _delete(this, db, false);
+    await deleteWallet(this.id, db, false);
+
     _accounts = <Account>[];
 
     int accountNo = 0;
@@ -72,12 +71,19 @@ class Wallet {
     String mnemonic = await getMnemonic(password);
     final masterNode = Bitbox.HDNode.fromSeed(Bitbox.Mnemonic.toSeed(mnemonic + password), testnet);
 
-    _saveAccount(db, 0, savedAccounts.length > 0 ? savedAccounts[0].name : null,
+    await _saveAccount(db, 0, savedAccounts.length > 0 ? savedAccounts[0].name : null,
       masterNode.derivePath("$derivationPath/$accountNo'").toXPub());
 
+    BchWallet.setTestNet(testnet);
+
     List<Bitbox.HDNode> accountNodes = <Bitbox.HDNode>[];
+
+    final transactionList = <String>[];
+    final allAddresses = <String, int>{};
+//    List<Map<String, dynamic>> addressTransactions = [];
+
     do {
-      accountNodes[accountNo] = masterNode.derivePath("$derivationPath/$accountNo'");
+      accountNodes.add(masterNode.derivePath("$derivationPath/$accountNo'"));
 
       for (int change = 0; change <= 1; change++) {
         List<Address> checkedAddresses = <Address>[];
@@ -88,40 +94,45 @@ class Wallet {
         bool repeat = true;
 
         do {
-          for (int childNo = startChildNo; childNo < startChildNo + 10; childNo++) {
-            final child = accountNodes[accountNo].derive(change).derive(childNo);
+          checkedAddresses.length = startChildNo + 10;
+          for (int i = 0; i < 10; i++) {
+            final child = accountNodes[accountNo].derive(change).derive(i + startChildNo);
 
-            checkedAddresses[childNo] = Address(childNo, child.toCashAddress(), id, null, change == 1);
-
-            addressesToFetch[childNo] = child.toCashAddress();
+            addressesToFetch[i] = child.toCashAddress();
           }
 
-          final addressDetails = await Bitbox.Address.details(
-            addressesToFetch, false) as List;
+          final addressDetails = await Bitbox.Address.details(addressesToFetch, false) as List;
 
-          for (int childNo = startChildNo; childNo <
-            startChildNo + 10; childNo++) {
-            final details = addressDetails[childNo];
-            if (details["txAppearances"] > 0) {
+          for (int i = 0; i < 10; i++) {
+            final childNo = i + startChildNo;
+
+            checkedAddresses[childNo] = Address.fromJson(addressDetails[i], childNo, id, accountNo, change == 1);
+
+            (addressDetails[i]["transactions"] as List).forEach((txid) {
+              if (!transactionList.contains(txid)) {
+                transactionList.add(txid);
+              }
+            });
+
+            if (addressDetails[i]["txApperances"] > 0 || addressDetails[i]["unconfirmedBalance"] > 0) {
               lastUsedChildNo = childNo;
-              checkedAddresses[childNo].unconfirmedBalance = details["unconfirmedBalanceSat"];
-              checkedAddresses[childNo].confirmedBalance = details["balanceSat"];
-            }
-
-            if (childNo - lastUsedChildNo == 5) {
+            } else if (lastUsedChildNo == null && i < 4) {
+              continue;
+            } else if ((lastUsedChildNo == null && i == 4) || childNo - lastUsedChildNo == 5) {
               repeat = false;
               break;
             }
           }
+          startChildNo += 10;
         } while (repeat);
 
         if (lastUsedChildNo == null) {
           break;
-        } else {
+        } else if (accountNo > 0) {
           for (int accountNoToSave = lastSavedAccountNo + 1; accountNoToSave <= accountNo; accountNoToSave++) {
-            if (_accounts.length <= accountNoToSave) {
-              _saveAccount(db, accountNo, name, accountNodes[accountNoToSave].toXPub());
-            }
+            //TODO: add old account name instead of wallet name here
+            final accountName = savedAccounts.length > accountNoToSave ? savedAccounts[accountNoToSave].name : null;
+            await _saveAccount(db, accountNoToSave, accountName, accountNodes[accountNoToSave].toXPub());
           }
 
           lastSavedAccountNo = accountNo;
@@ -141,26 +152,63 @@ class Wallet {
           });
 
           addresses.add(address);
+          allAddresses[address.cashAddr] = address.id;
         }
       }
       accountNo++;
     } while (accountNo <= lastSavedAccountNo + 2);
 
-    for (int accountNo = 0; accountNo < _accounts.length; accountNo++) {
-      List<String> txnDetailstoFetch = <String>[];
-      (await _accounts[accountNo].addresses).forEach((address) {
-        txnDetailstoFetch.add(address.cashAddr);
+    final transactions = [];
+    final txToFetch = <String>[];
+    for (int i = 0 ; i < transactionList.length; i++) {
+      txToFetch.add(transactionList[i]);
+      if (txToFetch.length == 10 || i == transactionList.length - 1) {
+        transactions.addAll(await Bitbox.Transaction.details(txToFetch));
+        txToFetch.clear();
+      }
+    };
 
-        if (txnDetailstoFetch.length == 10) {
-          //TODO: continue here by fetching and populating transaction details
+    for (int i = 0; i < transactions.length; i++) {
+      final tx = transactions[i];
+      int txnId;
+
+      final query = await db.query("txn", columns: ["id"], where: "txid = ? AND wallet_id = ?",
+        whereArgs: [tx["txid"], id]);
+
+      if (query.length > 0) {
+        txnId = query.first["id"];
+      } else {
+        txnId = await db.insert("txn", {
+          "wallet_id" : id,
+          "txid": tx["txid"],
+          "time": tx["time"] * 1000
+        });
+      }
+
+      final addressList = allAddresses.keys;
+      for (int j = 0; j < (tx["vin"] as List).length; j++) {
+        final cashAddr = tx["vin"][j]["cashAddress"];
+        if (addressList.contains(cashAddr)) {
+          await db.insert("txn_address", {
+            "txn_id": txnId,
+            "address_id": allAddresses[cashAddr],
+            "value": tx["vin"][j]["value"] * -1,
+          });
         }
-      });
+      }
 
-      // go through the populated transaction details and save them
-
-    }
+      for (int j = 0; j < (tx["vout"] as List).length; j++) {
+        final cashAddr = tx["vout"][j]["scriptPubKey"]["cashAddrs"].first;
+        if (addressList.contains(cashAddr)) {
+          await db.insert("txn_address", {
+            "txn_id": txnId,
+            "address_id": allAddresses[cashAddr],
+            "value": BchWallet.toSatoshi(double.parse(tx["vout"][j]["value"])),
+          });
+        }
+      };
+    };
   }
-
 
   Future<List<Account>> _getAccounts(sql.Database db) async {
     final result = await db.query("account", where: "wallet_id = $id");
@@ -189,13 +237,13 @@ class Wallet {
     final seed = Bitbox.Mnemonic.toSeed(mnemonic + password);
     final accountNode = Bitbox.HDNode.fromSeed(seed, testnet).derivePath("$derivationPath/$accountNo'");
 
-    _saveAccount(db, accountNo, name, accountNode.toXPub());
+    await _saveAccount(db, accountNo, name, accountNode.toXPub());
 
     return _accounts.last;
   }
 
-  _saveAccount(sql.Database db, int accountNo, String name, String xPub) {
-    db.insert('account', {
+  _saveAccount(sql.Database db, int accountNo, String name, String xPub) async {
+    await db.insert('account', {
       'wallet_id': id,
       'account_no': accountNo,
       'name': name,
@@ -227,17 +275,7 @@ class Wallet {
   }
 
   _setRestUrl() {
-    Bitbox.Bitbox.setRestUrl(restUrl: testnet ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
+    Bitbox.Bitbox.setRestUrl(testnet ? Bitbox.Bitbox.trestUrl : Bitbox.Bitbox.restUrl);
   }
 
-  static _delete(Wallet wallet, sql.Database db, [bool withRecord = false, String password = null]) {
-    db.rawDelete("DELETE FROM txn_address WHERE address_id IN (SELECT id FROM address WHERE wallet_id = ${wallet.id})");
-    db.delete("txn", where: "wallet_id = ${wallet.id}");
-    db.delete("address", where: "wallet_id = ${wallet.id}");
-    db.delete("account", where: "wallet_id = ${wallet.id}");
-
-    if (withRecord) {
-      db.delete("wallet", where: "id = ${wallet.id}");
-    }
-  }
 }
