@@ -71,8 +71,7 @@ class Address {
     List<Transaction> transactions;
 
     do {
-      //TODO: decrease this to 500 ms before releasing
-      await Future.delayed(Duration(milliseconds: 5000));
+      await Future.delayed(Duration(milliseconds: 1000));
       transactions = await updateBalanceFromBlockchain();
     } while (this.balance < expectedAmount);
 
