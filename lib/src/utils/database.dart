@@ -1,4 +1,3 @@
-import 'package:sqflite/sqflite.dart';
 import 'package:sqflite/sqflite.dart' as sql;
 import 'package:path/path.dart';
 
@@ -15,17 +14,9 @@ class Database {
           db.execute("CREATE TABLE txn (id INTEGER PRIMARY KEY, wallet_id INT NOT NULL, txid STRING NOT NULL, time INT NOT NULL, FOREIGN KEY (wallet_id) REFERENCES wallet(id))");
         db.execute("CREATE UNIQUE INDEX tdx_txid_wallet_id ON txn(txid, wallet_id)");
         db.execute("CREATE TABLE txn_address (txn_id INTEGER NOT NULL, address_id INTEGER NOT NULL, value INT NOT NULL, "
-          "FOREIGN KEY (txn_id) REFERENCES txn(id), FOREIGN KEY (address_id) REFERENCES address(id),  UNIQUE(txn_id, address_id))");
-      },
-      onUpgrade: (db, oldVersion, newVersion) {
-//        db.execute("DROP TABLE txn_address");
-//        db.execute("CREATE TABLE txn_address (txn_id INTEGER NOT NULL, address_id INTEGER NOT NULL, value INT NOT NULL, FOREIGN KEY (txn_id) REFERENCES txn(id), FOREIGN KEY (address_id) REFERENCES address(id))");
+          "FOREIGN KEY (txn_id) REFERENCES txn(id), FOREIGN KEY (address_id) REFERENCES address(id))");
       },
       version: 1
     );
-  }
-
-  static delete() {
-    sql.deleteDatabase('bch_wallet.db');
   }
 }
