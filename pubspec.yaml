@@ -1,6 +1,6 @@
 name: bch_wallet
 description: Bitcoin Cash Wallet
-version: 0.0.1
+version: 0.0.2
 homepage: https://www.forgac.me/bch-wallet-flutter
 
 environment:

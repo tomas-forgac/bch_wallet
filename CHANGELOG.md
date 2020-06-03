@@ -1,4 +1,8 @@
-## [0.0.1] - 2020-06-02
+## [0.0.2] - 2020-06-03
+
+Fixed README readability
+
+## [0.0.1] - 2020-06-03
 
 Stateful BCH wallet management for Flutter
 * works one or multiple wallets (optionally password protected)
