@@ -56,14 +56,16 @@ List<Account> accounts = await newWallet.accounts;
 // When using only one account per wallet, this method will suffice
 Account firstAccount = await newWallet.getAccount();
 
-// create a second account - password is necessary for password-protected wallets because accounts are hardened
+// create a second account - password is necessary for password-protected wallets
+// because accounts are hardened
 newWallet.createAccount("second account", password: "q7PWSLDQduXEvBE");
 
 // the newly created account will be added to the end of the list
 Account secondAccount = await newWallet.getAccount(1);
 
-// generate an empty address - if the address was used before (e.g. when the wallet is used in some other app,
-// it will be saved with its balance and transactions and another one will be generated until an empty one is found)
+// generate an empty address - if the address was used before (e.g. when the wallet
+// is used in some other app, it will be saved with its balance and transactions
+// and another one will be generated until an empty one is found)
 Address address = await firstAccount.getReceivingAddress();
 
 // Wait until a desired amount is received to the address.
@@ -73,9 +75,9 @@ List<Transaction> transaction = await address.receive(BchWallet.toSatoshi(0.1));
 // This is a getter for overall (balanced + unconfirmed) balance.
 int addressBalance = address.balance;
 
-// The library's local storage doesn't distinguish confirmed and unconfirmed balance. When you restart the app or
-// retrieve this address in a new state even before the receiving tansaction is confirmed,
-// the returned value will look as follows:
+// The library's local storage doesn't distinguish confirmed and unconfirmed balance.
+// When you restart the app or retrieve this address in a new state even before the
+// receiving tansaction is confirmed, the returned value will look as follows:
 int confirmedBalance = address.confirmedBalance;     // 10000000
 int unconfirmedBalance = address.unconfirmedBalance; // 0
 
@@ -85,17 +87,18 @@ address.updateBalanceFromBlockchain();
 // address (and thus account's) balance is always maintained locally for fast retrieval
 int accountbalance = await firstAccount.getStoredBalance();
 
-// however, to get account's confirmed and unconfirmed balance, or to check if the addresses have not been used
-// in some other app, do this
+// however, to get account's confirmed and unconfirmed balance, or to check if the
+// addresses have not been used in some other app, do this
 Map updatedBalance = await firstAccount.getBalanceFromBlockchain();
 
-// to send an amount from the account, first retrieve its utxos. Please store the utxo list in your state so it
-// doesn't need to be retrieved repeatedly to lower the Bitbox API load
+// to send an amount from the account, first retrieve its utxos. Please store the utxos
+// in your state so it doesn't need to be retrieved repeatedly to lower the API load
 this.addrsUtxo = await firstAccount.getUtxos();
 
 int amount = firstAccount.getMaxSpendable(this.addrsUtxo);
 
-// when storing the utxos in the state, it is possible to synchronously calculate fee after every user's input.
+// when storing the utxos in the state, it is possible to synchronously calculate fee
+// after every user's input.
 double fee = BchWallet.fromSatoshi(firstAccount.calculateFee(amount, 1, addrsUtxo));
 
 // ready to send
