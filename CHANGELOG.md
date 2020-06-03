@@ -1,3 +1,7 @@
+## [0.0.3] - 2020-06-03
+
+Expanded package description
+
 ## [0.0.2] - 2020-06-03
 
 Fixed README readability
